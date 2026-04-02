@@ -80,6 +80,11 @@ class NegativePoint:
             raise ValueError("x and y must be negative")
 
 
+@dataclasses.dataclass
+class WithNestedDefault:
+    child: WithDefault = dataclasses.field(default_factory=WithDefault)
+
+
 # ---------------------------------------------------------------------------
 # TypeParser
 # ---------------------------------------------------------------------------
@@ -398,6 +403,17 @@ class TestDataclassParser:
             parser.parse({"x": "bad", "y": 1.0}).expect("")
         assert any("x" in e.names for e in exc_info.value.errors)
 
+    def test_dataclass_instance_passed_directly(self):
+        p = Point(x=1.0, y=2.0)
+        result = create_parser(Point).parse(p).expect("")
+        assert result is p
+
+    def test_default_factory_returning_dataclass(self):
+        result = create_parser(WithNestedDefault).parse({}).expect("")
+        assert result.child == WithDefault(value=42)
+        result2 = create_parser(WithNestedDefault).parse({}).expect("")
+        assert result.child is not result2.child
+
 
 # ---------------------------------------------------------------------------
 # _fetch_defaults
@@ -691,6 +707,10 @@ class NTNested(typing.NamedTuple):
     tag: str = "default"
 
 
+class NTWithNestedDefault(typing.NamedTuple):
+    nested: NTWithDefault = NTWithDefault()
+
+
 class TestIsNamedTupleType:
     def test_namedtuple_class(self):
         assert is_namedtuple_type(NTPoint) is True
@@ -767,3 +787,12 @@ class TestNamedTupleParser:
         result = create_parser(NTPoint).parse(raw)
         assert isinstance(result, Ok)
         assert result.value == NTPoint(x=1.0, y=2.0)
+
+    def test_namedtuple_instance_passed_directly(self):
+        p = NTPoint(x=1.0, y=2.0)
+        result = create_parser(NTPoint).parse(p).expect("")
+        assert result is p
+
+    def test_default_returning_namedtuple(self):
+        result = create_parser(NTWithNestedDefault).parse({}).expect("")
+        assert result.nested == NTWithDefault(value=42, label="hello")

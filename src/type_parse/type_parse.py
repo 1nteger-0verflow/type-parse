@@ -293,6 +293,8 @@ class DataclassParser[T: _DataclassInstance](Parser[T]):
             yield n, p.parse(v, names=(*names, n))
 
     def parse(self, value: Any, *, names: tuple[str, ...] = ()) -> Result[T, list[ParseErr]]:  # noqa: ANN401
+        if isinstance(value, self._cls):
+            return Ok(value)
         errors: list[ParseErr] = []
         parsed: dict[str, Any] = {}
         for n, result in self._iter_parse(value, names=names):
@@ -329,6 +331,8 @@ class NamedTupleParser[T: tuple](Parser[T]):
             yield n, p.parse(v, names=(*names, n))
 
     def parse(self, value: Any, *, names: tuple[str, ...] = ()) -> Result[T, list[ParseErr]]:  # noqa: ANN401
+        if isinstance(value, self._cls):
+            return Ok(value)
         errors: list[ParseErr] = []
         parsed: dict[str, Any] = {}
         for n, result in self._iter_parse(value, names=names):
