@@ -406,7 +406,12 @@ class TestDataclassParser:
     def test_dataclass_instance_passed_directly(self):
         p = Point(x=1.0, y=2.0)
         result = create_parser(Point).parse(p).expect("")
-        assert result is p
+        assert result == p
+
+    def test_dataclass_instance_with_wrong_field_type_is_rejected(self):
+        p = Point(x="bad", y=2.0)  # type: ignore[arg-type]
+        result = create_parser(Point).parse(p)
+        assert isinstance(result, Err)
 
     def test_default_factory_returning_dataclass(self):
         result = create_parser(WithNestedDefault).parse({}).expect("")
@@ -791,7 +796,12 @@ class TestNamedTupleParser:
     def test_namedtuple_instance_passed_directly(self):
         p = NTPoint(x=1.0, y=2.0)
         result = create_parser(NTPoint).parse(p).expect("")
-        assert result is p
+        assert result == p
+
+    def test_namedtuple_instance_with_wrong_field_type_is_rejected(self):
+        p = NTPoint(x="bad", y=2.0)  # type: ignore[arg-type]
+        result = create_parser(NTPoint).parse(p)
+        assert isinstance(result, Err)
 
     def test_default_returning_namedtuple(self):
         result = create_parser(NTWithNestedDefault).parse({}).expect("")

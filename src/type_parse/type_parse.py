@@ -289,12 +289,15 @@ class DataclassParser[T: _DataclassInstance](Parser[T]):
 
     def _iter_parse(self, value: Any, *, names: tuple[str, ...] = ()):  # noqa: ANN401
         for n, p in self._value_parsers.items():
-            v = value[n] if n in value else self.get_default(n)
+            if is_dataclass_instance(value):
+                v = getattr(value, n)
+            elif n in value:
+                v = value[n]
+            else:
+                v = self.get_default(n)
             yield n, p.parse(v, names=(*names, n))
 
     def parse(self, value: Any, *, names: tuple[str, ...] = ()) -> Result[T, list[ParseErr]]:  # noqa: ANN401
-        if isinstance(value, self._cls):
-            return Ok(value)
         errors: list[ParseErr] = []
         parsed: dict[str, Any] = {}
         for n, result in self._iter_parse(value, names=names):
@@ -327,12 +330,15 @@ class NamedTupleParser[T: tuple](Parser[T]):
 
     def _iter_parse(self, value: Any, *, names: tuple[str, ...] = ()):  # noqa: ANN401
         for n, p in self._value_parsers.items():
-            v = value[n] if n in value else self._defaults.get(n, _MISSING)
+            if isinstance(value, self._cls):
+                v = getattr(value, n)
+            elif n in value:
+                v = value[n]
+            else:
+                v = self._defaults.get(n, _MISSING)
             yield n, p.parse(v, names=(*names, n))
 
     def parse(self, value: Any, *, names: tuple[str, ...] = ()) -> Result[T, list[ParseErr]]:  # noqa: ANN401
-        if isinstance(value, self._cls):
-            return Ok(value)
         errors: list[ParseErr] = []
         parsed: dict[str, Any] = {}
         for n, result in self._iter_parse(value, names=names):
