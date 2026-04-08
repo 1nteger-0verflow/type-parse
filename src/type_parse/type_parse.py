@@ -14,6 +14,11 @@ class _DataclassInstance(typing.Protocol):
     __dataclass_fields__: typing.ClassVar[dict[str, dataclasses.Field]]
 
 
+class _NamedTupleInstance(typing.Protocol):
+    _fields: tuple[str, ...]
+    _field_defaults: dict[str, Any]
+
+
 def is_dataclass_type(obj: object) -> typing.TypeGuard[type[_DataclassInstance]]:
     return dataclasses.is_dataclass(obj) and isinstance(obj, type)
 
@@ -22,7 +27,7 @@ def is_dataclass_instance(obj: object) -> typing.TypeGuard[_DataclassInstance]:
     return dataclasses.is_dataclass(obj) and not isinstance(obj, type)
 
 
-def is_namedtuple_type(obj: object) -> bool:
+def is_namedtuple_type(obj: object) -> typing.TypeGuard[type[_NamedTupleInstance]]:
     return isinstance(obj, type) and issubclass(obj, tuple) and hasattr(obj, "_fields")
 
 
@@ -321,7 +326,7 @@ class DataclassParser[T: _DataclassInstance](Parser[T]):
         return self._defaults[name]
 
 
-class NamedTupleParser[T: tuple](Parser[T]):
+class NamedTupleParser[T: _NamedTupleInstance](Parser[T]):
     def __init__(self, cls: type[T], value_parsers: dict[str, Parser], defaults: dict[str, Any]):
         super().__init__()
         self._cls = cls
@@ -396,6 +401,10 @@ def create_parser[T](t: type[set[T]], *, root: Path | None = None) -> SetParser[
 
 @typing.overload
 def create_parser[K, V](t: type[dict[K, V]], *, root: Path | None = None) -> DictParser[K, V]: ...
+
+
+@typing.overload
+def create_parser[T: _NamedTupleInstance](t: type[T], *, root: Path | None = None) -> NamedTupleParser[T]: ...
 
 
 @typing.overload
