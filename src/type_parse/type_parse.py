@@ -158,6 +158,8 @@ class ListParser[T](Parser[list[T]]):
             yield i, self._value_parser.parse(v, names=(*names, str(i)))
 
     def parse(self, value: Any, *, names: tuple[str, ...] = ()) -> Result[list[T], list[ParseErr]]:  # noqa: ANN401
+        if not isinstance(value, abc.Iterable):
+            return Err([ParseErr(names=names, actual_value=value)])
         errors, parsed = [], []
         for _i, result in self._iter_parse(value, names=names):
             if isinstance(result, Err):
@@ -179,6 +181,8 @@ class SetParser[T](Parser[set[T]]):
             yield i, self._value_parser.parse(v, names=(*names, str(i)))
 
     def parse(self, value: Any, *, names: tuple[str, ...] = ()) -> Result[set[T], list[ParseErr]]:  # noqa: ANN401
+        if not isinstance(value, abc.Iterable):
+            return Err([ParseErr(names=names, actual_value=value)])
         errors: list[ParseErr] = []
         parsed: set = set()
         for _i, result in self._iter_parse(value, names=names):
@@ -202,6 +206,8 @@ class DictParser[K, V](Parser[dict[K, V]]):
             yield k, self._key_parser.parse(k, names=names), self._value_parser.parse(v, names=(*names, str(k)))
 
     def parse(self, value: Any, *, names: tuple[str, ...] = ()) -> Result[dict[K, V], list[ParseErr]]:  # noqa: ANN401
+        if not isinstance(value, abc.Mapping):
+            return Err([ParseErr(names=names, actual_value=value)])
         errors: list[ParseErr] = []
         parsed: dict = {}
         for _k, key_result, val_result in self._iter_parse(value, names=names):
@@ -221,6 +227,9 @@ class TupleParser[*Ts](Parser[tuple[*Ts]]):
         self._forward_parsers, self._ellipsis_parser, self._backward_parsers = self._split_parsers(value_parsers)
 
     def _iter_parse(self, value: Any, *, names: tuple[str, ...] = ()):  # noqa: ANN401
+        if not isinstance(value, abc.Sequence) or isinstance(value, (str, bytes)):
+            yield None, Err([ParseErr(names=names, actual_value=value)])
+            return
         n_values = len(value)
         n_forward = len(self._forward_parsers)
         n_backward = len(self._backward_parsers)
@@ -296,13 +305,15 @@ class DataclassParser[T: _DataclassInstance](Parser[T]):
         for n, p in self._value_parsers.items():
             if is_dataclass_instance(value):
                 v = getattr(value, n)
-            elif n in value:
+            elif isinstance(value, abc.Mapping) and n in value:
                 v = value[n]
             else:
                 v = self.get_default(n)
             yield n, p.parse(v, names=(*names, n))
 
     def parse(self, value: Any, *, names: tuple[str, ...] = ()) -> Result[T, list[ParseErr]]:  # noqa: ANN401
+        if not (is_dataclass_instance(value) or isinstance(value, abc.Mapping)):
+            return Err([ParseErr(names=names, actual_value=value)])
         errors: list[ParseErr] = []
         parsed: dict[str, Any] = {}
         for n, result in self._iter_parse(value, names=names):
@@ -337,13 +348,15 @@ class NamedTupleParser[T: _NamedTupleInstance](Parser[T]):
         for n, p in self._value_parsers.items():
             if isinstance(value, self._cls):
                 v = getattr(value, n)
-            elif n in value:
+            elif isinstance(value, abc.Mapping) and n in value:
                 v = value[n]
             else:
                 v = self._defaults.get(n, _MISSING)
             yield n, p.parse(v, names=(*names, n))
 
     def parse(self, value: Any, *, names: tuple[str, ...] = ()) -> Result[T, list[ParseErr]]:  # noqa: ANN401
+        if not isinstance(value, (self._cls, abc.Mapping)):
+            return Err([ParseErr(names=names, actual_value=value)])
         errors: list[ParseErr] = []
         parsed: dict[str, Any] = {}
         for n, result in self._iter_parse(value, names=names):
