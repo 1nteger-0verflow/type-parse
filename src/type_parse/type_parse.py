@@ -458,7 +458,7 @@ def create_parser(t, *, root: Path | None = None):  # type: ignore[misc]  # noqa
         type_hints = typing.get_type_hints(t)
         return DataclassParser(
             t,
-            value_parsers={f.name: create_parser(type_hints[f.name], root=root) for f in dataclasses.fields(t)},
+            value_parsers={f.name: create_parser(type_hints[f.name], root=root) for f in dataclasses.fields(t) if f.init},
             defaults=_fetch_defaults(dataclasses.fields(t)),
         )
 
