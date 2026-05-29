@@ -4,9 +4,10 @@ import types
 import typing
 from collections import abc
 from pathlib import Path
-from typing import Any, TypeGuard, overload
+from typing import Any, TypeGuard, cast, overload
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter as _TypeAdapter
+from pydantic import ValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 
@@ -27,12 +28,6 @@ def is_namedtuple_type(obj: object) -> TypeGuard[type[_NamedTupleType]]:
 
 
 def _preprocess_data(value: Any, type_: Any, root: Path | None) -> Any:
-    """型アノテーションを参照しながら入力データを再帰的に前処理する。
-
-    - Enum: 名前文字列 → Enum インスタンス
-    - Path (root あり): 文字列 → root 基準の絶対パス
-    - コンテナ・dataclass・NamedTuple: 各フィールドに再帰適用
-    """
     # Enum: by name string
     if isinstance(type_, type) and issubclass(type_, enum.Enum):
         if isinstance(value, str):
@@ -40,9 +35,8 @@ def _preprocess_data(value: Any, type_: Any, root: Path | None) -> Any:
                 return type_[value]
             except KeyError:
                 valid = [e.name for e in type_]
-                raise ValueError(
-                    f"'{value}' is not a valid {type_.__name__} name. Valid names: {valid}"
-                ) from None
+                msg = f"'{value}' is not a valid {type_.__name__} name. Valid names: {valid}"
+                raise ValueError(msg) from None
         return value
 
     # Path: resolve relative to root
@@ -59,67 +53,55 @@ def _preprocess_data(value: Any, type_: Any, root: Path | None) -> Any:
         for t in (a for a in args if a is not type(None)):
             try:
                 return _preprocess_data(value, t, root)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S112
                 continue
         return value
 
-    # list[T]
+    # list
     if origin is list and args and isinstance(value, list):
         return [_preprocess_data(item, args[0], root) for item in value]
 
-    # set[T]
+    # set
     if origin is set and args and isinstance(value, (list, set)):
         return [_preprocess_data(item, args[0], root) for item in value]
 
-    # tuple[T, ...] または tuple[T1, T2, ...]
+    # tuple
     if origin is tuple and args and isinstance(value, (list, tuple)):
         if len(args) == 2 and args[1] is Ellipsis:
             return [_preprocess_data(item, args[0], root) for item in value]
         return [_preprocess_data(item, t, root) for item, t in zip(value, args)]
 
-    # dict[K, V]
+    # dict
     if origin is dict and args and isinstance(value, abc.Mapping):
         k_type, v_type = args
-        return {
-            _preprocess_data(k, k_type, root): _preprocess_data(v, v_type, root)
-            for k, v in value.items()
-        }
+        return {_preprocess_data(k, k_type, root): _preprocess_data(v, v_type, root) for k, v in value.items()}
 
-    # dataclass または NamedTuple: Mapping 入力
-    if (is_dataclass_type(type_) or is_namedtuple_type(type_)) and isinstance(
-        value, abc.Mapping
-    ):
+    # Mapping -> dataclass または NamedTuple
+    if (is_dataclass_type(type_) or is_namedtuple_type(type_)) and isinstance(value, abc.Mapping):
         hints = typing.get_type_hints(type_)
-        return {
-            k: _preprocess_data(v, hints.get(k, type(v)), root)
-            for k, v in value.items()
-        }
+        return {k: _preprocess_data(v, hints.get(k, type(v)), root) for k, v in value.items()}
 
-    # dataclass: インスタンス入力
+    # dataclass
     if is_dataclass_type(type_) and is_dataclass_instance(value):
         hints = typing.get_type_hints(type_)
-        return {
-            k: _preprocess_data(getattr(value, k), hints.get(k, Any), root)
-            for k in hints
-        }
+        return {k: _preprocess_data(getattr(value, k), hints.get(k, Any), root) for k in hints}
 
-    # NamedTuple: インスタンス入力
+    # NamedTuple
     if is_namedtuple_type(type_) and isinstance(value, tuple):
         hints = typing.get_type_hints(type_)
-        return {
-            k: _preprocess_data(getattr(value, k), hints.get(k, Any), root)
-            for k in type_._fields
-        }
+        return {k: _preprocess_data(getattr(value, k), hints.get(k, Any), root) for k in type_._fields}
 
     return value
 
 
-class _PreprocessingAdapter[T]:
-    """TypeAdapter を wrap し、validate_python 前に _preprocess_data を適用する。"""
-
-    def __init__(self, inner: TypeAdapter[T], type_: Any, root: Path | None) -> None:
-        self._inner = inner
+class TypeAdapter[T]:
+    @overload
+    def __init__(self, type_: type[T], root: Path | None = None) -> None: ...
+    @overload
+    def __init__(self, type_: Any, root: Path | None = None) -> None: ...
+    def __init__(self, type_: Any, root: Path | None = None) -> None:
         self._type = type_
+        self._inner = cast("_TypeAdapter[Any]", _TypeAdapter(type_))
         self._root = root
 
     def validate_python(self, value: Any, **kwargs: Any) -> T:
@@ -132,11 +114,7 @@ class _PreprocessingAdapter[T]:
                 input_type="python",
                 line_errors=[
                     InitErrorDetails(
-                        type=PydanticCustomError(
-                            "value_error", "{msg}", {"msg": str(exc)}
-                        ),
-                        loc=(),
-                        input=value,
+                        type=PydanticCustomError("value_error", "{msg}", {"msg": str(exc)}), loc=(), input=value
                     )
                 ],
             ) from None
@@ -144,23 +122,3 @@ class _PreprocessingAdapter[T]:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
-
-
-@overload
-def create_parser[T](
-    type_: TypeAdapter[T], *, root: Path | None = None
-) -> _PreprocessingAdapter[T]: ...
-@overload
-def create_parser[T](
-    type_: type[T], *, root: Path | None = None
-) -> _PreprocessingAdapter[T]: ...
-def create_parser(
-    type_: TypeAdapter | type, *, root: Path | None = None
-) -> _PreprocessingAdapter[Any]:
-    if isinstance(type_, TypeAdapter):
-        ta: TypeAdapter[Any] = type_
-        type_obj: Any = ta._type  # pydantic stores the original type here
-    else:
-        ta = TypeAdapter(type_)
-        type_obj = type_
-    return _PreprocessingAdapter(ta, type_obj, root)
