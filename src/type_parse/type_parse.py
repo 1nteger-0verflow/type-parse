@@ -46,13 +46,14 @@ def _preprocess_data(value: Any, type_: Any, root: Path | None) -> Any:
     origin = typing.get_origin(type_)
     args = typing.get_args(type_)
 
-    # Union (T | None, A | B, etc.) — 各型で前処理を試み、最初に成功したものを返す
     if origin is types.UnionType or origin is typing.Union:
         if value is None and type(None) in args:
             return None
         for t in (a for a in args if a is not type(None)):
             try:
-                return _preprocess_data(value, t, root)
+                preprocessed = _preprocess_data(value, t, root)
+                _TypeAdapter(t).validate_python(preprocessed)
+                return preprocessed
             except Exception:  # noqa: BLE001, S112
                 continue
         return value
