@@ -6,8 +6,7 @@ from collections import abc
 from pathlib import Path
 from typing import Any, TypeGuard, cast, overload
 
-from pydantic import TypeAdapter as _TypeAdapter
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 
@@ -25,6 +24,10 @@ class _NamedTupleType(typing.Protocol):
 
 def is_namedtuple_type(obj: object) -> TypeGuard[type[_NamedTupleType]]:
     return isinstance(obj, type) and issubclass(obj, tuple) and hasattr(obj, "_fields")
+
+
+def _is_sequence_value(value: object) -> bool:
+    return isinstance(value, abc.Sequence) and not isinstance(value, (str, bytes))
 
 
 def _preprocess_data(value: Any, type_: Any, root: Path | None) -> Any:
@@ -52,22 +55,22 @@ def _preprocess_data(value: Any, type_: Any, root: Path | None) -> Any:
         for t in (a for a in args if a is not type(None)):
             try:
                 preprocessed = _preprocess_data(value, t, root)
-                _TypeAdapter(t).validate_python(preprocessed)
+                TypeAdapter(t).validate_python(preprocessed)
                 return preprocessed
             except Exception:  # noqa: BLE001, S112
                 continue
         return value
 
     # list
-    if origin is list and args and isinstance(value, list):
+    if origin is list and args and _is_sequence_value(value):
         return [_preprocess_data(item, args[0], root) for item in value]
 
     # set
-    if origin is set and args and isinstance(value, (list, set)):
+    if origin is set and args and (_is_sequence_value(value) or isinstance(value, abc.Set)):
         return [_preprocess_data(item, args[0], root) for item in value]
 
     # tuple
-    if origin is tuple and args and isinstance(value, (list, tuple)):
+    if origin is tuple and args and _is_sequence_value(value):
         if len(args) == 2 and args[1] is Ellipsis:
             return [_preprocess_data(item, args[0], root) for item in value]
         return [_preprocess_data(item, t, root) for item, t in zip(value, args)]
@@ -95,17 +98,17 @@ def _preprocess_data(value: Any, type_: Any, root: Path | None) -> Any:
     return value
 
 
-class TypeAdapter[T]:
+class TypeParser[T]:
     @overload
     def __init__(self, type_: type[T], root: Path | None = None) -> None: ...
     @overload
     def __init__(self, type_: Any, root: Path | None = None) -> None: ...
     def __init__(self, type_: Any, root: Path | None = None) -> None:
         self._type = type_
-        self._inner = cast("_TypeAdapter[Any]", _TypeAdapter(type_))
+        self._inner = cast("TypeAdapter[Any]", TypeAdapter(type_))
         self._root = root
 
-    def validate_python(self, value: Any, **kwargs: Any) -> T:
+    def parse(self, value: Any, **kwargs: Any) -> T:
         try:
             preprocessed = _preprocess_data(value, self._type, self._root)
         except ValueError as exc:
@@ -120,6 +123,3 @@ class TypeAdapter[T]:
                 ],
             ) from None
         return self._inner.validate_python(preprocessed, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
