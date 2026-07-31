@@ -7,13 +7,17 @@ import pytest
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from pydantic import ValidationError, model_validator
 
-from utils.type_parse import TypeParser, is_dataclass_instance, is_dataclass_type, is_namedtuple_type
+from utils.type_parse import (
+    FieldError,
+    TypeParser,
+    errors_by_field,
+    is_dataclass_instance,
+    is_dataclass_type,
+    is_namedtuple_type,
+)
 
-# ---------------------------------------------------------------------------
+
 # Fixtures / helpers
-# ---------------------------------------------------------------------------
-
-
 class Color(enum.Enum):
     RED = 1
     GREEN = 2
@@ -71,11 +75,26 @@ class NegativePoint:
         return self
 
 
-# ---------------------------------------------------------------------------
+class NTPoint(typing.NamedTuple):
+    x: float
+    y: float
+
+
+class NTWithDefault(typing.NamedTuple):
+    value: int = 42
+    label: str = "hello"
+
+
+class NTNested(typing.NamedTuple):
+    point: NTPoint
+    tag: str = "default"
+
+
+class NTWithNestedDefault(typing.NamedTuple):
+    nested: NTWithDefault = NTWithDefault()
+
+
 # 基本型
-# ---------------------------------------------------------------------------
-
-
 class TestBasicTypes:
     def test_int_passthrough(self):
         assert TypeParser(int).parse(42) == 42
@@ -94,17 +113,10 @@ class TestBasicTypes:
             TypeParser(int).parse("not-an-int")
 
 
-# ---------------------------------------------------------------------------
-# Enum（名前文字列パース）
-# ---------------------------------------------------------------------------
-
-
+# Enum
 class TestEnumParsing:
     def test_parse_by_name(self):
         assert TypeParser(Color).parse("RED") is Color.RED
-
-    def test_parse_by_name_green(self):
-        assert TypeParser(Color).parse("GREEN") is Color.GREEN
 
     def test_parse_instance_directly(self):
         assert TypeParser(Color).parse(Color.BLUE) is Color.BLUE
@@ -114,11 +126,7 @@ class TestEnumParsing:
             TypeParser(Color).parse("YELLOW")
 
 
-# ---------------------------------------------------------------------------
 # Path
-# ---------------------------------------------------------------------------
-
-
 class TestPathParsing:
     def test_no_root(self):
         assert TypeParser(Path).parse("foo/bar") == Path("foo/bar")
@@ -139,15 +147,8 @@ class TestPathParsing:
         assert result == [Path("/base/a").resolve(), Path("/base/b").resolve()]
 
 
-# ---------------------------------------------------------------------------
 # コレクション型
-# ---------------------------------------------------------------------------
-
-
 class TestCollections:
-    def test_list_of_ints(self):
-        assert TypeParser(list[int]).parse([1, 2, 3]) == [1, 2, 3]
-
     def test_list_converts_elements(self):
         assert TypeParser(list[int]).parse(["1", "2"]) == [1, 2]
 
@@ -155,23 +156,14 @@ class TestCollections:
         with pytest.raises(ValidationError):
             TypeParser(list[int]).parse(["a", "b"])
 
-    def test_set_of_ints(self):
-        assert TypeParser(set[int]).parse([1, 2, 3]) == {1, 2, 3}
-
     def test_set_deduplicates(self):
         assert TypeParser(set[int]).parse([1, 1, 2]) == {1, 2}
-
-    def test_dict_str_to_int(self):
-        assert TypeParser(dict[str, int]).parse({"a": 1}) == {"a": 1}
 
     def test_dict_value_conversion(self):
         assert TypeParser(dict[str, int]).parse({"x": "10"}) == {"x": 10}
 
     def test_tuple_fixed(self):
         assert TypeParser(tuple[int, str]).parse((1, "a")) == (1, "a")
-
-    def test_tuple_variable_length(self):
-        assert TypeParser(tuple[int, ...]).parse([1, 2, 3]) == (1, 2, 3)
 
     def test_tuple_variable_converts_elements(self):
         assert TypeParser(tuple[int, ...]).parse(["1", "2"]) == (1, 2)
@@ -201,11 +193,7 @@ class TestCollections:
         assert TypeParser(set[Color]).parse(raw) == {Color.RED, Color.GREEN}
 
 
-# ---------------------------------------------------------------------------
 # Union
-# ---------------------------------------------------------------------------
-
-
 class TestUnion:
     def test_none_type_in_union(self):
         assert TypeParser(int | None).parse(None) is None
@@ -218,16 +206,8 @@ class TestUnion:
             TypeParser(int | None).parse("not-a-number")
 
 
-# ---------------------------------------------------------------------------
 # Dataclass
-# ---------------------------------------------------------------------------
-
-
 class TestDataclassParsing:
-    def test_parse_simple_dataclass(self):
-        result = TypeParser(Point).parse({"x": 1.0, "y": 2.0})
-        assert result == Point(x=1.0, y=2.0)
-
     def test_parse_with_type_conversion(self):
         result = TypeParser(Point).parse({"x": "3", "y": "4"})
         assert result == Point(x=3.0, y=4.0)
@@ -254,10 +234,6 @@ class TestDataclassParsing:
         result = TypeParser(Nested).parse({"point": {"x": 1.0, "y": 2.0}})
         assert result == Nested(point=Point(x=1.0, y=2.0), label="default")
 
-    def test_field_error_raises(self):
-        with pytest.raises(ValidationError):
-            TypeParser(Point).parse({"x": "bad", "y": 1.0})
-
     def test_dataclass_instance_passed_directly(self):
         p = Point(x=1.0, y=2.0)
         result = TypeParser(Point).parse(p)
@@ -279,11 +255,7 @@ class TestDataclassParsing:
         assert ("y",) in locs
 
 
-# ---------------------------------------------------------------------------
 # Enum フィールドを持つ Dataclass
-# ---------------------------------------------------------------------------
-
-
 class TestDataclassWithEnum:
     def test_enum_field_by_name(self):
         @dataclasses.dataclass
@@ -302,11 +274,7 @@ class TestDataclassWithEnum:
         assert result.color is Color.GREEN
 
 
-# ---------------------------------------------------------------------------
-# Path フィールドを持つ Dataclass（root 伝播）
-# ---------------------------------------------------------------------------
-
-
+# Path フィールドを持つ Dataclass
 class TestDataclassWithPath:
     def test_path_field_with_root(self):
         @dataclasses.dataclass
@@ -340,17 +308,13 @@ class TestDataclassWithPath:
         assert result.inner.path == Path("/base/foo").resolve()
 
 
-# ---------------------------------------------------------------------------
-# Post-init / Union dispatch
-# ---------------------------------------------------------------------------
-
-
+# Union dispatch
 class TestUnionDispatch:
-    def test_post_init_validation_failure(self):
+    def test_validator_raises(self):
         with pytest.raises(ValidationError):
             TypeParser(PositivePoint).parse({"x": -1.0, "y": 2.0})
 
-    def test_post_init_validation_success(self):
+    def test_validator_passes(self):
         result = TypeParser(PositivePoint).parse({"x": 1.0, "y": 2.0})
         assert result.x == 1.0 and result.y == 2.0
 
@@ -368,6 +332,9 @@ class TestUnionDispatch:
         with pytest.raises(ValidationError):
             TypeParser(PositivePoint | NegativePoint).parse({"x": 1.0, "y": -2.0})
 
+    def test_fallback_to_plain_type(self):
+        assert isinstance(TypeParser(PositivePoint | Point | None).parse({"x": 5, "y": -2}), Point)
+
     def test_union_with_dict_config(self):
         @dataclasses.dataclass
         class WithTuple:
@@ -382,36 +349,9 @@ class TestUnionDispatch:
         assert result == WithTuple(vap_bins=(0.1, 0.9))
 
 
-# ---------------------------------------------------------------------------
 # NamedTuple
-# ---------------------------------------------------------------------------
-
-
-class NTPoint(typing.NamedTuple):
-    x: float
-    y: float
-
-
-class NTWithDefault(typing.NamedTuple):
-    value: int = 42
-    label: str = "hello"
-
-
-class NTNested(typing.NamedTuple):
-    point: NTPoint
-    tag: str = "default"
-
-
-class NTWithNestedDefault(typing.NamedTuple):
-    nested: NTWithDefault = NTWithDefault()
-
-
 class TestNamedTupleParsing:
-    def test_parse_ok(self):
-        result = TypeParser(NTPoint).parse({"x": 1.0, "y": 2.0})
-        assert result == NTPoint(x=1.0, y=2.0)
-
-    def test_type_conversion(self):
+    def test_parse_with_type_conversion(self):
         result = TypeParser(NTPoint).parse({"x": "1.5", "y": "2.5"})
         assert result == NTPoint(x=1.5, y=2.5)
 
@@ -455,29 +395,25 @@ class TestNamedTupleParsing:
         assert result.nested == NTWithDefault(value=42, label="hello")
 
 
-# ---------------------------------------------------------------------------
 # Guard 関数
-# ---------------------------------------------------------------------------
-
-
 class TestDataclassGuards:
-    def test_instance_true_for_dataclass_instance(self):
+    def test_instance_true(self):
         assert is_dataclass_instance(Point(1.0, 2.0)) is True
 
-    def test_instance_false_for_dataclass_class(self):
+    def test_instance_false_for_class(self):
         assert is_dataclass_instance(Point) is False
 
-    def test_instance_false_for_plain_object(self):
+    def test_instance_false_for_non_dataclass(self):
         assert is_dataclass_instance(42) is False
 
-    def test_type_true_for_dataclass_class(self):
+    def test_type_true(self):
         assert is_dataclass_type(Point) is True
 
     def test_type_false_for_instance(self):
         assert is_dataclass_type(Point(1.0, 2.0)) is False
 
 
-class TestIsNamedTupleType:
+class TestNamedTupleGuards:
     def test_namedtuple_class(self):
         assert is_namedtuple_type(NTPoint) is True
 
@@ -489,3 +425,83 @@ class TestIsNamedTupleType:
 
     def test_instance_is_false(self):
         assert is_namedtuple_type(NTPoint(1.0, 2.0)) is False
+
+
+# 失敗した項目の全件収集
+class TestCollectsAllFailures:
+    def test_invalid_enum_name_reports_valid_names(self):
+        with pytest.raises(ValidationError) as exc_info:
+            TypeParser(Color).parse("YELLOW")
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["loc"] == ()
+        assert "YELLOW" in errors[0]["msg"]
+        assert "RED" in errors[0]["msg"]
+
+    def test_list_of_enum_collects_every_invalid_item(self):
+        raw = ["YELLOW", "RED", "PURPLE"]
+        with pytest.raises(ValidationError) as exc_info:
+            TypeParser(list[Color]).parse(raw)
+        errors = exc_info.value.errors()
+        assert len(errors) == 2
+        locs = {e["loc"] for e in errors}
+        assert locs == {(0,), (2,)}
+
+    def test_dict_of_enum_reports_key_location(self):
+        raw = {"a": "YELLOW", "b": "RED", "c": "PURPLE"}
+        with pytest.raises(ValidationError) as exc_info:
+            TypeParser(dict[str, Color]).parse(raw)
+        errors = exc_info.value.errors()
+        assert len(errors) == 2
+        locs = {e["loc"] for e in errors}
+        assert locs == {("a",), ("c",)}
+
+    def test_list_of_dataclass_with_enum_reports_nested_location(self):
+        @dataclasses.dataclass
+        class Config:
+            color: Color
+
+        raw = [{"color": "YELLOW"}, {"color": "RED"}, {"color": "PURPLE"}]
+        with pytest.raises(ValidationError) as exc_info:
+            TypeParser(list[Config]).parse(raw)
+        errors = exc_info.value.errors()
+        assert len(errors) == 2
+        locs = {e["loc"] for e in errors}
+        assert locs == {(0, "color"), (2, "color")}
+
+
+# errors_by_field
+class TestErrorsByField:
+    def test_error_keyed_by_field(self):
+        with pytest.raises(ValidationError) as exc_info:
+            TypeParser(Point).parse({"x": "bad", "y": 1.0})
+        result = errors_by_field(exc_info.value)
+        assert ("x",) in result
+        assert isinstance(result[("x",)][0], FieldError)
+
+    def test_multiple_fields_each_have_own_key(self):
+        with pytest.raises(ValidationError) as exc_info:
+            TypeParser(Point).parse({"x": "bad_x", "y": "bad_y"})
+        result = errors_by_field(exc_info.value)
+        assert set(result.keys()) == {("x",), ("y",)}
+
+    def test_enum_error_includes_message_and_type(self):
+        with pytest.raises(ValidationError) as exc_info:
+            TypeParser(list[Color]).parse(["RED", "UNKNOWN", "BLUE", "NOPE"])
+        result = errors_by_field(exc_info.value)
+        assert set(result.keys()) == {(1,), (3,)}
+        fe = result[(1,)][0]
+        assert fe.error_type == "value_error"
+        assert "UNKNOWN" in fe.msg
+        assert fe.input == "UNKNOWN"
+
+    def test_nested_loc_for_list_element(self):
+        @dataclasses.dataclass
+        class Config:
+            colors: list[Color]
+
+        with pytest.raises(ValidationError) as exc_info:
+            TypeParser(Config).parse({"colors": ["UNKNOWN1", "RED", "UNKNOWN2"]})
+        result = errors_by_field(exc_info.value)
+        assert ("colors", 0) in result
+        assert ("colors", 2) in result
